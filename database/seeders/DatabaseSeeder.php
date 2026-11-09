@@ -27,6 +27,10 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        if (User::count() > 0) {
+            return;
+        }
+
         // 1. Create Default Test User (John Doe)
         $testUser = User::create([
             'name' => 'John Doe',
