@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["php83", "php83Packages.composer", "php83Extensions.pdo", "php83Extensions.pdo_mysql", "php83Extensions.pdo_pgsql", "php83Extensions.pdo_sqlite", "php83Extensions.sqlite3", "php83Extensions.mbstring", "php83Extensions.xml", "php83Extensions.curl", "php83Extensions.zip", "php83Extensions.bcmath"]
-
-[phases.install]
-cmds = ["composer install --no-dev --optimize-autoloader --no-interaction"]
-
-[start]
-cmd = "touch database/database.sqlite && php artisan migrate --force && php artisan db:seed --force && php artisan storage:link --force && php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"
