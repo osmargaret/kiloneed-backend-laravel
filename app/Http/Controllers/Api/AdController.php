@@ -70,5 +70,49 @@ class AdController extends Controller
 
         return response()->json(['clicks' => $ad->clicks]);
     }
+
+    public function trackImpression(int $id): JsonResponse
+    {
+        $ad = Ad::findOrFail($id);
+        $ad->increment('impressions');
+
+        return response()->json(['impressions' => $ad->impressions]);
+    }
+
+    public function toggleStatus(Request $request, int $id): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $ad = Ad::findOrFail($id);
+
+        if ($ad->user_id !== $user->id && !$user->is_admin) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'status' => 'required|string|in:active,paused,ended',
+        ]);
+
+        $ad->update(['status' => $validated['status']]);
+
+        return response()->json([
+            'message' => "Ad campaign {$ad->status} successfully",
+            'ad' => $ad,
+            'status' => $ad->status,
+        ]);
+    }
+
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $ad = Ad::findOrFail($id);
+
+        if ($ad->user_id !== $user->id && !$user->is_admin) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $ad->delete();
+
+        return response()->json(['message' => 'Ad deleted successfully']);
+    }
 }
 

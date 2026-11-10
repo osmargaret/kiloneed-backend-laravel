@@ -46,6 +46,7 @@ Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{id}', [ProductController::class, 'show'])->whereNumber('id');
 Route::get('/ads', [AdController::class, 'index']);
 Route::post('/ads/{id}/click', [AdController::class, 'trackClick'])->whereNumber('id')->middleware('throttle:60,1');
+Route::post('/ads/{id}/impression', [AdController::class, 'trackImpression'])->whereNumber('id')->middleware('throttle:60,1');
 Route::get('/groups', [GroupController::class, 'index']);
 Route::get('/groups/{id}', [GroupController::class, 'show'])->whereNumber('id');
 
@@ -110,6 +111,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Ads
     Route::get('/ads/my', [AdController::class, 'myAds']);
     Route::post('/ads', [AdController::class, 'store']);
+    Route::put('/ads/{id}/status', [AdController::class, 'toggleStatus']);
+    Route::delete('/ads/{id}', [AdController::class, 'destroy']);
 
     // Wallet, subscriptions & Paystack
     Route::get('/transactions', [TransactionController::class, 'index']);
