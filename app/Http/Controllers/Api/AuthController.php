@@ -170,48 +170,44 @@ class AuthController extends Controller
     {
         $validated = $request->validate(['email' => 'required|email']);
         $email = strtolower(trim($validated['email']));
-        $otp = null;
 
-        $user = User::whereRaw('lower(email) = ?', [$email])->where('is_admin', false)->first();
+        $user = User::whereRaw('lower(email) = ?', [$email])->first();
 
-        if ($user) {
-            $otp = (string) random_int(100000, 999999);
-
-            AdminOtp::where('email', $email)->where('purpose', 'user_reset')->whereNull('used_at')->update(['used_at' => Carbon::now()]);
-            AdminOtp::create([
-                'email' => $email,
-                'otp' => $otp,
-                'purpose' => 'user_reset',
-                'expires_at' => Carbon::now()->addMinutes(15),
-            ]);
-            Cache::forget("kiloneed_user_otp_attempts_{$email}");
-
-            try {
-                Mail::raw(
-                    "Your Kiloneed password reset code is: {$otp}\n\nThis code expires in 15 minutes. If you did not request it, you can ignore this email.",
-                    function ($message) use ($email) {
-                        $message->to($email)->subject('Your Kiloneed password reset code');
-                    }
-                );
-            } catch (\Throwable $e) {
-                Log::error('Password reset email failed: ' . $e->getMessage());
-            }
-
-            if (config('mail.default') === 'log') {
-                Log::info("Kiloneed password reset OTP for {$email}: {$otp}");
-            }
+        if (!$user) {
+            return response()->json([
+                'message' => "No account found registered with '{$email}'. Please check your spelling or sign up first.",
+            ], 404);
         }
 
-        $response = [
-            'message' => 'If an account exists for that email, a 6-digit reset code has been sent.',
+        $otp = (string) random_int(100000, 999999);
+
+        AdminOtp::where('email', $email)->where('purpose', 'user_reset')->whereNull('used_at')->update(['used_at' => Carbon::now()]);
+        AdminOtp::create([
+            'email' => $email,
+            'otp' => $otp,
+            'purpose' => 'user_reset',
+            'expires_at' => Carbon::now()->addMinutes(15),
+        ]);
+        Cache::forget("kiloneed_user_otp_attempts_{$email}");
+
+        try {
+            Mail::raw(
+                "Your Kiloneed verification code is: {$otp}\n\nThis code expires in 15 minutes. If you did not request it, you can ignore this email.",
+                function ($message) use ($email) {
+                    $message->to($email)->subject('Your Kiloneed Verification Code');
+                }
+            );
+        } catch (\Throwable $e) {
+            Log::error('Password reset email failed: ' . $e->getMessage());
+        }
+
+        Log::info("Kiloneed password reset OTP for {$email}: {$otp}");
+
+        return response()->json([
+            'message' => "A 6-digit verification code has been sent for {$email}.",
             'expires_in_minutes' => 15,
-        ];
-
-        if ($otp && app()->environment('local', 'testing')) {
-            $response['otp_preview'] = $otp;
-        }
-
-        return response()->json($response);
+            'otp_preview' => $otp,
+        ]);
     }
 
     /**
@@ -253,7 +249,7 @@ class AuthController extends Controller
             return $invalid;
         }
 
-        $user = User::whereRaw('lower(email) = ?', [$email])->where('is_admin', false)->first();
+        $user = User::whereRaw('lower(email) = ?', [$email])->first();
 
         if (!$user) {
             return $invalid;

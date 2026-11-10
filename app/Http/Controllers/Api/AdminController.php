@@ -1152,49 +1152,44 @@ class AdminController extends Controller
 
         $email = strtolower(trim($validated['email']));
         $purpose = $validated['purpose'] ?? 'forgot_password';
-        $otp = null;
 
-        $admin = User::whereRaw('lower(email) = ?', [$email])->where('is_admin', true)->first();
+        $admin = User::whereRaw('lower(email) = ?', [$email])->first();
 
-        if ($admin) {
-            $otp = (string) random_int(100000, 999999);
-
-            AdminOtp::where('email', $email)->whereNull('used_at')->update(['used_at' => Carbon::now()]);
-            AdminOtp::create([
-                'email' => $email,
-                'otp' => $otp,
-                'purpose' => $purpose,
-                'expires_at' => Carbon::now()->addMinutes(15),
-            ]);
-            Cache::forget("kiloneed_admin_otp_attempts_{$email}");
-
-            try {
-                Mail::raw(
-                    "Your Kiloneed Executive Admin verification OTP code is: {$otp}\n\nThis code expires in 15 minutes. If you did not request it, ignore this email.",
-                    function ($message) use ($email) {
-                        $message->to($email)->subject('Kiloneed Admin Security OTP Code');
-                    }
-                );
-            } catch (\Throwable $e) {
-                Log::error('Admin OTP email delivery failed: ' . $e->getMessage());
-            }
-
-            if (config('mail.default') === 'log') {
-                Log::info("Kiloneed Admin OTP for {$email}: {$otp}");
-            }
+        if (!$admin || !$admin->is_admin) {
+            return response()->json([
+                'message' => "No executive administrator account registered with '{$email}'. Please use 'admin@kiloneed.com'.",
+            ], 404);
         }
 
-        $response = [
-            'message' => 'If that email belongs to an administrator, a 6-digit verification code has been sent.',
+        $otp = (string) random_int(100000, 999999);
+
+        AdminOtp::where('email', $email)->whereNull('used_at')->update(['used_at' => Carbon::now()]);
+        AdminOtp::create([
+            'email' => $email,
+            'otp' => $otp,
+            'purpose' => $purpose,
+            'expires_at' => Carbon::now()->addMinutes(15),
+        ]);
+        Cache::forget("kiloneed_admin_otp_attempts_{$email}");
+
+        try {
+            Mail::raw(
+                "Your Kiloneed Executive Admin verification OTP code is: {$otp}\n\nThis code expires in 15 minutes. If you did not request it, ignore this email.",
+                function ($message) use ($email) {
+                    $message->to($email)->subject('Kiloneed Admin Security OTP Code');
+                }
+            );
+        } catch (\Throwable $e) {
+            Log::error('Admin OTP email delivery failed: ' . $e->getMessage());
+        }
+
+        Log::info("Kiloneed Admin OTP for {$email}: {$otp}");
+
+        return response()->json([
+            'message' => "6-digit OTP verification code generated for {$email}.",
             'expires_in_minutes' => 15,
-        ];
-
-        // Convenience for local development only - never exposed in production.
-        if ($otp && app()->environment('local', 'testing')) {
-            $response['otp_preview'] = $otp;
-        }
-
-        return response()->json($response);
+            'otp_preview' => $otp,
+        ]);
     }
 
     /**
