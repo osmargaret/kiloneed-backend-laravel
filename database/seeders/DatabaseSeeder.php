@@ -59,8 +59,8 @@ class DatabaseSeeder extends Seeder
         // (ADMIN_EMAIL / ADMIN_PASSWORD) and is never overwritten once it exists.
         $this->seedAdministrator();
 
-        // Demo data (fake users with known passwords) is for local development only.
-        if (app()->environment('production') && !env('SEED_DEMO')) {
+        // Demo data is disabled for production launch. Only seed if explicitly requested via SEED_DEMO=true.
+        if (!filter_var(env('SEED_DEMO', false), FILTER_VALIDATE_BOOLEAN)) {
             return;
         }
 
