@@ -93,6 +93,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Trade groups
     Route::get('/groups/my', [GroupController::class, 'myGroups']);
     Route::post('/groups', [GroupController::class, 'store']);
+    Route::put('/groups/{id}', [GroupController::class, 'update']);
+    Route::delete('/groups/{id}', [GroupController::class, 'destroy']);
     Route::post('/groups/{id}/join', [GroupController::class, 'join']);
     Route::post('/groups/{id}/leave', [GroupController::class, 'leave']);
 

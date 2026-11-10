@@ -48,7 +48,6 @@ class ProductController extends Controller
         }
 
         $products = $query->get()->map(function ($p) {
-            $p->distanceKm = 3.5;
             $p->saved = false;
             return $p;
         });

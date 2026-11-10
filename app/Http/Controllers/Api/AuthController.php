@@ -58,6 +58,8 @@ class AuthController extends Controller
             'latitude' => 6.5966,
             'longitude' => 3.3421,
             'kyc_status' => 'verified',
+            'rating' => 0.0,
+            'review_count' => 0,
         ]);
 
         $token = $user->createToken('auth_token')->plainTextToken;

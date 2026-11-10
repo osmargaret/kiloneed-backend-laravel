@@ -18,6 +18,7 @@ class GroupController extends Controller
 
         $processed = $groups->map(function ($g) use ($user) {
             $g->isMember = $user ? GroupMember::where('group_id', $g->id)->where('user_id', $user->id)->exists() : false;
+            $g->isAdmin = $user ? ($g->owner_id === $user->id || GroupMember::where('group_id', $g->id)->where('user_id', $user->id)->where('role', 'admin')->exists()) : false;
             return $g;
         });
 
@@ -110,6 +111,65 @@ class GroupController extends Controller
 
         return response()->json([
             'message' => 'Left group successfully',
+        ]);
+    }
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $group = Group::findOrFail($id);
+
+        $isAdmin = $group->owner_id === $user->id || GroupMember::where('group_id', $group->id)->where('user_id', $user->id)->where('role', 'admin')->exists();
+        if (!$isAdmin) {
+            return response()->json(['message' => 'Unauthorized to update this group.'], 403);
+        }
+
+        $validated = $request->validate([
+            'name' => 'nullable|string|max:255',
+            'description' => 'nullable|string',
+            'icon' => 'nullable|string',
+            'cover_image' => 'nullable|string',
+            'category' => 'nullable|string',
+            'group_type' => 'nullable|string|in:open,closed,special',
+            'monthly_dues' => 'nullable|numeric|min:0',
+        ]);
+
+        if (isset($validated['name'])) $group->name = $validated['name'];
+        if (array_key_exists('description', $validated)) $group->description = $validated['description'];
+        if (array_key_exists('icon', $validated)) $group->icon = $validated['icon'];
+        if (array_key_exists('cover_image', $validated)) $group->cover_image = $validated['cover_image'];
+        if (isset($validated['category'])) $group->category = $validated['category'];
+        if (isset($validated['group_type'])) {
+            $group->group_type = $validated['group_type'];
+            $group->is_private = $validated['group_type'] !== 'open';
+        }
+        if (isset($validated['monthly_dues'])) $group->monthly_dues = $validated['monthly_dues'];
+
+        $group->save();
+        $group->loadCount('members');
+        $group->isMember = true;
+        $group->isAdmin = true;
+
+        return response()->json([
+            'message' => 'Group updated successfully',
+            'group' => $group,
+        ]);
+    }
+
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $group = Group::findOrFail($id);
+
+        $isAdmin = $group->owner_id === $user->id || GroupMember::where('group_id', $group->id)->where('user_id', $user->id)->where('role', 'admin')->exists();
+        if (!$isAdmin) {
+            return response()->json(['message' => 'Unauthorized to delete this group.'], 403);
+        }
+
+        $group->delete();
+
+        return response()->json([
+            'message' => 'Group deleted successfully',
         ]);
     }
 }

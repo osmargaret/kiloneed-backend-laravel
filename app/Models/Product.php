@@ -84,12 +84,12 @@ class Product extends Model
 
     public function getRatingAttribute(): float
     {
-        return $this->user ? (float) $this->user->rating : 4.9;
+        return $this->user && $this->user->rating ? (float) $this->user->rating : 0.0;
     }
 
     public function getReviewsAttribute(): int
     {
-        return $this->user ? (int) $this->user->review_count : 25;
+        return $this->user && $this->user->review_count ? (int) $this->user->review_count : 0;
     }
 
     public function getListingTypeAttribute(): string
