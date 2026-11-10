@@ -24,7 +24,7 @@ return [
         'http://localhost:8080,http://localhost:5175,http://localhost:5174,http://localhost:5173,capacitor://localhost,http://localhost,https://localhost'
     ))))),
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => ['*.vercel.app'],
 
     'allowed_headers' => ['*'],
 
