@@ -25,6 +25,9 @@ class AuthController extends Controller
             'password' => 'required|string|min:8|max:128',
             'phone' => 'nullable|string|max:50',
             'location' => 'nullable|string|max:255',
+            'country' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'city' => 'nullable|string|max:100',
             'industry' => 'nullable|string|max:100',
         ]);
 
@@ -37,12 +40,20 @@ class AuthController extends Controller
             ], 422);
         }
 
+        $country = $validated['country'] ?? 'Nigeria';
+        $state = $validated['state'] ?? 'Lagos';
+        $city = $validated['city'] ?? 'Ikeja';
+        $location = $validated['location'] ?? "{$city}, {$state}, {$country}";
+
         $user = User::create([
             'name' => $validated['name'],
             'email' => $email,
             'password' => Hash::make($validated['password']),
             'phone' => $validated['phone'] ?? null,
-            'location' => $validated['location'] ?? 'Ikeja, Lagos',
+            'country' => $country,
+            'state' => $state,
+            'city' => $city,
+            'location' => $location,
             'industry' => $validated['industry'] ?? 'Electronics',
             'latitude' => 6.5966,
             'longitude' => 3.3421,

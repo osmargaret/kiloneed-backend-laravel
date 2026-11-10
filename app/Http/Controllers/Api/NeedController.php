@@ -40,6 +40,9 @@ class NeedController extends Controller
         $category = $request->query('category');
         $privacy = $request->query('privacy');
         $search = $request->query('search');
+        $country = $request->query('country');
+        $state = $request->query('state');
+        $city = $request->query('city');
         $sort = $request->query('sort', 'oldest'); // 'oldest', 'newest', 'distance'
         $page = (int) $request->query('page', 1);
         $pageSize = (int) $request->query('page_size', 10);
@@ -55,6 +58,17 @@ class NeedController extends Controller
         // Privacy filter
         if ($privacy && $privacy !== 'all') {
             $query->where('privacy', $privacy);
+        }
+
+        // Country, State, City (CSC) filter
+        if ($country && strtolower($country) !== 'all') {
+            $query->where('country', $country);
+        }
+        if ($state && strtolower($state) !== 'all') {
+            $query->where('state', $state);
+        }
+        if ($city && strtolower($city) !== 'all') {
+            $query->where('city', $city);
         }
 
         // Category filter
@@ -93,10 +107,8 @@ class NeedController extends Controller
             return $need;
         });
 
-        // Apply Geofence filter if requested (default 50km)
-        if ($request->has('geofence') && $request->boolean('geofence')) {
-            $processed = $processed->filter(fn ($need) => $need->distanceKm <= $maxRadiusKm)->values();
-        }
+        // Radius filtering removed per user specification: now using Country, State, City (CSC)
+        // distanceKm is preserved on each need for information only
 
         // Sorting
         if ($sort === 'newest') {
@@ -127,6 +139,9 @@ class NeedController extends Controller
             'title' => 'nullable|string|max:255',
             'text' => 'required|string',
             'location' => 'nullable|string',
+            'country' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'city' => 'nullable|string|max:100',
             'latitude' => 'nullable|numeric',
             'longitude' => 'nullable|numeric',
             'radius' => 'nullable|string',
@@ -151,14 +166,22 @@ class NeedController extends Controller
 
         $title = $validated['title'] ?? mb_substr($validated['text'], 0, 50) . '...';
 
+        $country = $validated['country'] ?? $user->country ?? 'Nigeria';
+        $state = $validated['state'] ?? $user->state ?? 'Lagos';
+        $city = $validated['city'] ?? $user->city ?? 'Ikeja';
+        $location = $validated['location'] ?? $user->location ?? "{$city}, {$state}, {$country}";
+
         $need = Need::create([
             'user_id' => $user->id,
             'title' => $title,
             'text' => $validated['text'],
-            'location' => $validated['location'] ?? $user->location ?? 'Ikeja, Lagos',
+            'location' => $location,
+            'country' => $country,
+            'state' => $state,
+            'city' => $city,
             'latitude' => $validated['latitude'] ?? $user->latitude ?? 6.5966,
             'longitude' => $validated['longitude'] ?? $user->longitude ?? 3.3421,
-            'radius' => $validated['radius'] ?? 'Within your location',
+            'radius' => 'CSC',
             'categories' => $categories,
             'privacy' => $validated['privacy'] ?? 'public',
             'expires_at' => $expiresAt,

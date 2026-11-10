@@ -15,6 +15,7 @@ class Product extends Model
         'title',
         'price',
         'description',
+        'country',
         'seller_type',
         'state',
         'city',

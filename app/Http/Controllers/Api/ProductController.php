@@ -27,6 +27,10 @@ class ProductController extends Controller
             $query->where('category', $category);
         }
 
+        if (($country = $request->query('country')) && $country !== 'All' && $country !== 'all') {
+            $query->where('country', $country);
+        }
+
         if (($state = $request->query('state')) && $state !== 'All') {
             $query->where('state', $state);
         }
@@ -60,6 +64,7 @@ class ProductController extends Controller
             'title' => 'required|string|max:255',
             'price' => 'required|numeric|min:0',
             'description' => 'required|string',
+            'country' => 'nullable|string',
             'seller_type' => 'nullable|string',
             'state' => 'nullable|string',
             'city' => 'nullable|string',
@@ -77,6 +82,7 @@ class ProductController extends Controller
             'title' => $validated['title'],
             'price' => $validated['price'],
             'description' => $validated['description'],
+            'country' => $validated['country'] ?? $user->country ?? 'Nigeria',
             'seller_type' => $validated['seller_type'] ?? 'Business',
             'state' => $validated['state'] ?? 'Lagos',
             'city' => $validated['city'] ?? 'Ikeja',
