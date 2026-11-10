@@ -36,5 +36,5 @@ RUN mkdir -p storage/framework/sessions storage/framework/views storage/framewor
 EXPOSE 8080
 
 # Run migrations, idempotent seed, storage link, and start the server on Railway's $PORT
-CMD sh -c "touch database/database.sqlite && php artisan migrate --force && php artisan db:seed --force && php artisan storage:link --force && php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"
+CMD sh -c "touch database/database.sqlite && chmod 777 database/database.sqlite && php artisan migrate --force && php artisan db:seed --force || true; php artisan storage:link --force || true; php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"
 
