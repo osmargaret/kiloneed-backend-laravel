@@ -67,6 +67,8 @@ class TransactionController extends Controller
             return null;
         }
 
+        $callbackOrigin = rtrim((string) (env('FRONTEND_URL') ?: request()->header('Origin') ?: 'https://kiloneed.com'), '/');
+
         try {
             $response = Http::withToken($secret)
                 ->timeout(15)
@@ -75,7 +77,7 @@ class TransactionController extends Controller
                     'amount' => (int) round($amountNgn * 100), // kobo
                     'currency' => 'NGN',
                     'reference' => $reference,
-                    ...(env('FRONTEND_URL') ? ['callback_url' => rtrim((string) env('FRONTEND_URL'), '/') . '/subscription'] : []),
+                    'callback_url' => $callbackOrigin . '/subscription',
                     'metadata' => $metadata,
                 ]);
 
