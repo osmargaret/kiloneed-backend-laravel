@@ -104,7 +104,15 @@ class AuthController extends Controller
             'bio' => 'nullable|string',
             'company' => 'nullable|string',
             'settings' => 'nullable|array',
+            'handle' => 'nullable|string',
         ]);
+
+        if (isset($validated['handle'])) {
+            $currentSettings = $user->settings ?? [];
+            $currentSettings['handle'] = $validated['handle'];
+            $validated['settings'] = $currentSettings;
+            unset($validated['handle']);
+        }
 
         // Track 30-day reviewable identity fields in profile_change_requests table
         $trackedFields = [
