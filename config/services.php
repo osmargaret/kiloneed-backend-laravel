@@ -35,6 +35,12 @@ return [
         ],
     ],
 
+    'cloudinary' => [
+        'cloud_name' => env('CLOUDINARY_CLOUD_NAME'),
+        'api_key' => env('CLOUDINARY_API_KEY'),
+        'api_secret' => env('CLOUDINARY_API_SECRET'),
+    ],
+
     'paystack' => [
         'secret' => env('PAYSTACK_SECRET', env('PAYSTACK_SECRET_KEY')),
         'payment_url' => env('PAYSTACK_PAYMENT_URL', 'https://api.paystack.co'),

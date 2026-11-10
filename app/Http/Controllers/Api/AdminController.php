@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 
 class AdminController extends Controller
 {
@@ -31,6 +32,10 @@ class AdminController extends Controller
      */
     protected function ensureAdminTablesSeeded(): void
     {
+        if (app()->environment('production') && !env('SEED_DEMO')) {
+            return;
+        }
+
         if (ProfileChangeRequest::count() === 0) {
             $u1 = User::first();
             $u2 = User::skip(1)->first() ?? $u1;
@@ -250,11 +255,13 @@ class AdminController extends Controller
             'kyc_status' => 'nullable|string|in:verified,pending,unverified,suspended',
         ]);
 
+        $temporaryPassword = Str::random(14);
+
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'phone' => $validated['phone'] ?? '+234 800 000 0000',
-            'password' => Hash::make('password123'),
+            'password' => $temporaryPassword,
             'company' => $validated['company'] ?? 'Verified Partner',
             'location' => $validated['location'] ?? 'Ikeja, Lagos',
             'industry' => $validated['industry'] ?? 'Electronics',
@@ -266,6 +273,7 @@ class AdminController extends Controller
 
         return response()->json([
             'message' => 'Merchant provisioned successfully',
+            'temporary_password' => $temporaryPassword,
             'user' => $user,
         ], 201);
     }
@@ -320,6 +328,9 @@ class AdminController extends Controller
     public function deleteUser(int $id): JsonResponse
     {
         $user = User::findOrFail($id);
+        if ($user->is_admin) {
+            return response()->json(['message' => 'Administrator accounts cannot be deleted here.'], 403);
+        }
         $user->delete();
 
         return response()->json([
@@ -1074,8 +1085,63 @@ class AdminController extends Controller
     }
 
     /**
-     * Send a 6-Digit Email OTP to the Administrator's Registered Email
-     * Persisted in admin_otps table & Cache
+     * Admin sign-in with email + password. Issues a Sanctum token that is only
+     * valid for users flagged as administrators.
+     */
+    public function adminLogin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => 'required|email',
+            'password' => 'required|string',
+        ]);
+
+        $user = User::whereRaw('lower(email) = ?', [strtolower(trim($validated['email']))])->first();
+
+        if (!$user || !$user->is_admin || !Hash::check($validated['password'], $user->password)) {
+            return response()->json(['message' => 'Invalid administrator credentials.'], 401);
+        }
+
+        return $this->adminSession($user, 'Signed in to Kiloneed Command Center.');
+    }
+
+    public function adminMe(Request $request): JsonResponse
+    {
+        return response()->json(['user' => $request->user('sanctum')]);
+    }
+
+    public function adminLogout(Request $request): JsonResponse
+    {
+        $request->user('sanctum')?->currentAccessToken()?->delete();
+
+        return response()->json(['message' => 'Signed out successfully.']);
+    }
+
+    /**
+     * Change the signed-in administrator's password (requires the current password).
+     */
+    public function changeAdminPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'password' => 'required|string|min:8|max:128|confirmed',
+        ]);
+
+        $user = $request->user('sanctum');
+
+        if (!Hash::check($validated['current_password'], $user->password)) {
+            return response()->json(['message' => 'Current password is incorrect.'], 422);
+        }
+
+        $user->forceFill(['password' => $validated['password']])->save();
+        $user->tokens()->where('id', '!=', $user->currentAccessToken()->id)->delete();
+
+        return response()->json(['message' => 'Password updated successfully.']);
+    }
+
+    /**
+     * Send a 6-digit email OTP to a registered administrator.
+     * The response is intentionally identical whether or not the email belongs to an admin
+     * so that the endpoint cannot be used to discover administrator accounts.
      */
     public function sendAdminOtp(Request $request): JsonResponse
     {
@@ -1085,39 +1151,54 @@ class AdminController extends Controller
         ]);
 
         $email = strtolower(trim($validated['email']));
-        $otp = (string) random_int(100000, 999999);
         $purpose = $validated['purpose'] ?? 'forgot_password';
+        $otp = null;
 
-        AdminOtp::create([
-            'email' => $email,
-            'otp' => $otp,
-            'purpose' => $purpose,
-            'expires_at' => Carbon::now()->addMinutes(15),
-        ]);
+        $admin = User::whereRaw('lower(email) = ?', [$email])->where('is_admin', true)->first();
 
-        Cache::put("kiloneed_admin_otp_{$email}", $otp, now()->addMinutes(15));
+        if ($admin) {
+            $otp = (string) random_int(100000, 999999);
 
-        try {
-            Mail::raw(
-                "Your Kiloneed Executive Admin verification OTP code is: {$otp}\n\nThis code expires in 15 minutes.",
-                function ($message) use ($email) {
-                    $message->to($email)->subject('Kiloneed Admin Security OTP Code');
-                }
-            );
-        } catch (\Throwable $e) {
-            Log::info("Kiloneed Admin OTP for {$email}: {$otp}");
+            AdminOtp::where('email', $email)->whereNull('used_at')->update(['used_at' => Carbon::now()]);
+            AdminOtp::create([
+                'email' => $email,
+                'otp' => $otp,
+                'purpose' => $purpose,
+                'expires_at' => Carbon::now()->addMinutes(15),
+            ]);
+            Cache::forget("kiloneed_admin_otp_attempts_{$email}");
+
+            try {
+                Mail::raw(
+                    "Your Kiloneed Executive Admin verification OTP code is: {$otp}\n\nThis code expires in 15 minutes. If you did not request it, ignore this email.",
+                    function ($message) use ($email) {
+                        $message->to($email)->subject('Kiloneed Admin Security OTP Code');
+                    }
+                );
+            } catch (\Throwable $e) {
+                Log::error('Admin OTP email delivery failed: ' . $e->getMessage());
+            }
+
+            if (config('mail.default') === 'log') {
+                Log::info("Kiloneed Admin OTP for {$email}: {$otp}");
+            }
         }
 
-        return response()->json([
-            'message' => "A 6-digit verification OTP has been sent to {$email}",
-            'email' => $email,
-            'otp_preview' => $otp,
+        $response = [
+            'message' => 'If that email belongs to an administrator, a 6-digit verification code has been sent.',
             'expires_in_minutes' => 15,
-        ]);
+        ];
+
+        // Convenience for local development only - never exposed in production.
+        if ($otp && app()->environment('local', 'testing')) {
+            $response['otp_preview'] = $otp;
+        }
+
+        return response()->json($response);
     }
 
     /**
-     * Verify a 6-Digit Email OTP for Admin Sign-In
+     * Verify a 6-digit email OTP and sign the administrator in (passwordless OTP login).
      */
     public function verifyAdminOtp(Request $request): JsonResponse
     {
@@ -1127,89 +1208,97 @@ class AdminController extends Controller
         ]);
 
         $email = strtolower(trim($validated['email']));
-        $inputOtp = trim($validated['otp']);
+        $record = $this->consumeAdminOtp($email, trim($validated['otp']), 'otp_login');
 
-        $dbRecord = AdminOtp::where('email', $email)
-            ->whereNull('used_at')
-            ->where('expires_at', '>', Carbon::now())
-            ->latest()
-            ->first();
-
-        $cachedOtp = Cache::get("kiloneed_admin_otp_{$email}");
-
-        if ($dbRecord && $dbRecord->otp !== $inputOtp) {
-            return response()->json([
-                'message' => 'Invalid or expired OTP code. Please check your email and try again.',
-            ], 422);
+        if (!$record) {
+            return response()->json(['message' => 'Invalid or expired OTP code. Please check your email and try again.'], 422);
         }
 
-        if (!$dbRecord && $cachedOtp && $cachedOtp !== $inputOtp) {
-            return response()->json([
-                'message' => 'Invalid or expired OTP code. Please check your email and try again.',
-            ], 422);
+        $admin = User::whereRaw('lower(email) = ?', [$email])->where('is_admin', true)->first();
+
+        if (!$admin) {
+            return response()->json(['message' => 'Invalid or expired OTP code.'], 422);
         }
 
-        if ($dbRecord) {
-            $dbRecord->update(['used_at' => Carbon::now()]);
-        }
-        Cache::forget("kiloneed_admin_otp_{$email}");
-
-        return response()->json([
-            'message' => 'OTP verified successfully. Signed in to Kiloneed Command Center.',
-            'email' => $email,
-            'verified' => true,
-        ]);
+        return $this->adminSession($admin, 'OTP verified successfully. Signed in to Kiloneed Command Center.');
     }
 
     /**
-     * Reset Administrator Password using 6-Digit Email OTP
+     * Reset the administrator password using a 6-digit email OTP.
      */
     public function resetAdminPasswordWithOtp(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'email' => 'required|email',
             'otp' => 'required|string|min:4|max:8',
-            'password' => 'required|string|min:6',
+            'password' => 'required|string|min:8|max:128',
         ]);
 
         $email = strtolower(trim($validated['email']));
-        $inputOtp = trim($validated['otp']);
+        $record = $this->consumeAdminOtp($email, trim($validated['otp']), ['forgot_password', 'security_reset']);
 
-        $dbRecord = AdminOtp::where('email', $email)
-            ->whereNull('used_at')
-            ->where('expires_at', '>', Carbon::now())
-            ->latest()
-            ->first();
+        $admin = $record
+            ? User::whereRaw('lower(email) = ?', [$email])->where('is_admin', true)->first()
+            : null;
 
-        $cachedOtp = Cache::get("kiloneed_admin_otp_{$email}");
-
-        if ($dbRecord && $dbRecord->otp !== $inputOtp) {
-            return response()->json([
-                'message' => 'Invalid or expired OTP code.',
-            ], 422);
+        if (!$admin) {
+            return response()->json(['message' => 'Invalid or expired OTP code.'], 422);
         }
 
-        if (!$dbRecord && $cachedOtp && $cachedOtp !== $inputOtp) {
-            return response()->json([
-                'message' => 'Invalid or expired OTP code.',
-            ], 422);
-        }
-
-        $user = User::where('email', $email)->first() ?? User::where('role', 'admin')->first();
-        if ($user) {
-            $user->update([
-                'password' => Hash::make($validated['password']),
-            ]);
-        }
-
-        if ($dbRecord) {
-            $dbRecord->update(['used_at' => Carbon::now()]);
-        }
-        Cache::forget("kiloneed_admin_otp_{$email}");
+        $admin->forceFill(['password' => $validated['password']])->save();
+        $admin->tokens()->delete();
 
         return response()->json([
             'message' => 'Administrator password has been reset successfully via Email OTP.',
             'email' => $email,
+        ]);
+    }
+
+    /**
+     * Validate and consume an OTP. Returns the record on success, null otherwise.
+     * Five wrong guesses invalidate the code.
+     */
+    protected function consumeAdminOtp(string $email, string $otp, string|array $purpose): ?AdminOtp
+    {
+        $record = AdminOtp::where('email', $email)
+            ->whereIn('purpose', (array) $purpose)
+            ->whereNull('used_at')
+            ->where('expires_at', '>', Carbon::now())
+            ->latest('id')
+            ->first();
+
+        if (!$record) {
+            return null;
+        }
+
+        $attemptsKey = "kiloneed_admin_otp_attempts_{$email}";
+        $attempts = (int) Cache::get($attemptsKey, 0);
+
+        if ($attempts >= 5) {
+            $record->update(['used_at' => Carbon::now()]);
+            Cache::forget($attemptsKey);
+            return null;
+        }
+
+        if (!hash_equals((string) $record->otp, $otp)) {
+            Cache::put($attemptsKey, $attempts + 1, now()->addMinutes(15));
+            return null;
+        }
+
+        $record->update(['used_at' => Carbon::now()]);
+        Cache::forget($attemptsKey);
+
+        return $record;
+    }
+
+    protected function adminSession(User $user, string $message): JsonResponse
+    {
+        $token = $user->createToken('admin_token')->plainTextToken;
+
+        return response()->json([
+            'message' => $message,
+            'token' => $token,
+            'user' => $user,
         ]);
     }
 }

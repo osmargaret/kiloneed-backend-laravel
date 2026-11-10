@@ -22,12 +22,49 @@ use Illuminate\Support\Str;
 
 class DatabaseSeeder extends Seeder
 {
+    protected function seedAdministrator(): void
+    {
+        $email = strtolower(trim((string) env('ADMIN_EMAIL', '')));
+        $password = (string) env('ADMIN_PASSWORD', '');
+
+        if ($email === '' || $password === '') {
+            $this->command?->warn('ADMIN_EMAIL / ADMIN_PASSWORD not set - no administrator account was created.');
+            return;
+        }
+
+        if (User::whereRaw('lower(email) = ?', [$email])->exists()) {
+            User::whereRaw('lower(email) = ?', [$email])->update(['is_admin' => true]);
+            return;
+        }
+
+        $admin = new User([
+            'name' => 'Super Admin',
+            'email' => $email,
+            'password' => $password,
+            'phone' => null,
+            'location' => 'Lagos, Nigeria',
+            'role' => 'admin',
+            'kyc_status' => 'verified',
+        ]);
+        $admin->is_admin = true;
+        $admin->save();
+    }
+
     /**
      * Seed the application's database.
      */
     public function run(): void
     {
-        if (User::count() > 0) {
+        // The administrator account is always provisioned from environment variables
+        // (ADMIN_EMAIL / ADMIN_PASSWORD) and is never overwritten once it exists.
+        $this->seedAdministrator();
+
+        // Demo data (fake users with known passwords) is for local development only.
+        if (app()->environment('production') && !env('SEED_DEMO')) {
+            return;
+        }
+
+        if (User::where('email', 'user@kiloneed.com')->exists()) {
             return;
         }
 
@@ -355,21 +392,7 @@ class DatabaseSeeder extends Seeder
             'description' => 'Annual Premium Merchant Plan & Ad Boost',
         ]);
 
-        // 8. Seed Admin & Pending KYC Accounts
-        User::create([
-            'name' => 'Kiloneed Super Admin',
-            'email' => 'admin@kiloneed.com',
-            'password' => Hash::make('admin123'),
-            'phone' => '+234 800 000 0000',
-            'location' => 'Victoria Island, Lagos',
-            'industry' => 'Administration',
-            'company' => 'Kiloneed Platform HQ',
-            'role' => 'admin',
-            'kyc_status' => 'verified',
-            'rating' => 5.0,
-            'review_count' => 100,
-        ]);
-
+        // 8. Pending KYC accounts (the administrator is provisioned from ADMIN_EMAIL / ADMIN_PASSWORD)
         $david = User::create([
             'name' => 'David Okonkwo',
             'email' => 'david@kiloneed.com',

@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
+use App\Models\Notification;
 use App\Models\Transaction;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -14,115 +17,121 @@ use Illuminate\Support\Str;
 class TransactionController extends Controller
 {
     /**
-     * Call Paystack Transaction Initialize API (https://api.paystack.co/transaction/initialize)
+     * Subscription plans. Prices are defined server-side so a client can never
+     * choose its own price. Amounts are in NGN.
      */
-    protected function callPaystackInitialize(string $email, float $amountNgn, string $reference, array $metadata = []): array
+    protected const PLANS = [
+        'free' => ['name' => 'Free Starter', 'monthly' => 0, 'annual' => 0],
+        'pro' => ['name' => 'Pro Merchant', 'monthly' => 5000, 'annual' => 48000],
+        'premium' => ['name' => 'Premium Merchant', 'monthly' => 12500, 'annual' => 120000],
+    ];
+
+    protected function paystackSecret(): ?string
     {
-        $secret = config('services.paystack.secret') ?: env('PAYSTACK_SECRET');
-        $baseUrl = rtrim(config('services.paystack.payment_url', 'https://api.paystack.co'), '/');
+        return config('services.paystack.secret') ?: null;
+    }
+
+    protected function paystackBaseUrl(): string
+    {
+        return rtrim(config('services.paystack.payment_url', 'https://api.paystack.co'), '/');
+    }
+
+    /**
+     * Current spendable wallet balance. Pending withdrawals are reserved so a user
+     * cannot withdraw the same funds twice. Card payments (Paystack checkout) never
+     * touch the wallet.
+     */
+    protected function walletBalance(User $user): float
+    {
+        $transactions = Transaction::where('user_id', $user->id)->get();
+
+        $deposits = $transactions->where('type', 'deposit')->where('status', 'successful')->sum('amount');
+        $withdrawals = $transactions->where('type', 'withdrawal')->whereIn('status', ['pending', 'successful'])->sum('amount');
+        $walletPayments = $transactions
+            ->where('type', 'payment')
+            ->where('status', 'successful')
+            ->filter(fn ($t) => ($t->metadata['method'] ?? 'wallet') !== 'card')
+            ->sum('amount');
+
+        return max(0, (float) ($deposits - $withdrawals - $walletPayments));
+    }
+
+    /**
+     * Call Paystack "initialize". Returns null when Paystack is unreachable/misconfigured.
+     */
+    protected function callPaystackInitialize(string $email, float $amountNgn, string $reference, array $metadata = []): ?array
+    {
+        $secret = $this->paystackSecret();
 
         if (!$secret) {
-            return [
-                'authorization_url' => null,
-                'access_code' => null,
-                'reference' => $reference,
-            ];
+            return null;
         }
 
         try {
             $response = Http::withToken($secret)
-                ->timeout(10)
-                ->post("{$baseUrl}/transaction/initialize", [
+                ->timeout(15)
+                ->post($this->paystackBaseUrl() . '/transaction/initialize', [
                     'email' => $email,
-                    'amount' => (int) round($amountNgn * 100), // Paystack expects kobo
+                    'amount' => (int) round($amountNgn * 100), // kobo
                     'currency' => 'NGN',
                     'reference' => $reference,
+                    ...(env('FRONTEND_URL') ? ['callback_url' => rtrim((string) env('FRONTEND_URL'), '/') . '/subscription'] : []),
                     'metadata' => $metadata,
                 ]);
 
             if ($response->successful() && $response->json('status') === true) {
                 $data = $response->json('data', []);
+
                 return [
                     'authorization_url' => $data['authorization_url'] ?? null,
                     'access_code' => $data['access_code'] ?? null,
                     'reference' => $data['reference'] ?? $reference,
                 ];
             }
+
+            Log::warning('Paystack initialize rejected: ' . $response->body());
         } catch (\Throwable $e) {
             Log::warning('Paystack initialize error: ' . $e->getMessage());
         }
 
-        return [
-            'authorization_url' => "https://checkout.paystack.com/{$reference}",
-            'access_code' => $reference,
-            'reference' => $reference,
-        ];
-    }
-
-    public function index(Request $request): JsonResponse
-    {
-        $user = $this->resolveUser($request);
-
-        $transactions = Transaction::where('user_id', $user->id)
-            ->latest()
-            ->get();
-
-        $deposits = $transactions->where('type', 'deposit')->where('status', 'successful')->sum('amount');
-        $withdrawals = $transactions->where('type', 'withdrawal')->where('status', 'successful')->sum('amount');
-        $payments = $transactions->where('type', 'payment')->where('status', 'successful')->sum('amount');
-        $balance = max(0, $deposits - $withdrawals - $payments);
-
-        return response()->json([
-            'wallet_balance' => (float) $balance,
-            'currency' => 'NGN',
-            'transactions' => $transactions,
-        ]);
+        return null;
     }
 
     /**
-     * Initialize a Paystack Checkout Session (Wallet Deposit, Ad Boost, or Plan Subscription)
+     * Create a PENDING transaction and a Paystack checkout session for it.
+     * Nothing is credited until Paystack confirms payment (webhook or verify).
      */
-    public function initializePaystack(Request $request): JsonResponse
+    protected function startCheckout(User $user, float $amount, string $type, string $description, array $meta, string $prefix): JsonResponse
     {
-        $user = $this->resolveUser($request);
+        if (!$this->paystackSecret()) {
+            return response()->json(['message' => 'Payments are not configured on this server.'], 503);
+        }
 
-        $validated = $request->validate([
-            'amount' => 'required|numeric|min:100',
-            'type' => 'nullable|in:deposit,payment',
-            'description' => 'nullable|string|max:255',
-            'plan_name' => 'nullable|string|max:100',
-        ]);
+        $reference = $prefix . strtoupper(Str::random(12));
 
-        $reference = 'TXN_PSK_' . strtoupper(Str::random(10));
-        $type = $validated['type'] ?? 'deposit';
-        $desc = $validated['description'] ?? ($type === 'deposit' ? 'Paystack Wallet Funding' : 'Paystack Merchant Payment');
+        $paystack = $this->callPaystackInitialize($user->email, $amount, $reference, array_merge($meta, [
+            'user_id' => $user->id,
+            'type' => $type,
+        ]));
 
-        $paystackData = $this->callPaystackInitialize(
-            $user->email ?: 'user@kiloneed.com',
-            (float) $validated['amount'],
-            $reference,
-            [
-                'user_id' => $user->id,
-                'user_name' => $user->name,
-                'type' => $type,
-                'plan_name' => $validated['plan_name'] ?? null,
-            ]
-        );
+        if (!$paystack || empty($paystack['authorization_url'])) {
+            return response()->json(['message' => 'Unable to start the payment right now. Please try again.'], 502);
+        }
 
         $trx = Transaction::create([
             'user_id' => $user->id,
             'type' => $type,
-            'amount' => $validated['amount'],
+            'amount' => $amount,
             'currency' => 'NGN',
-            'reference' => $paystackData['reference'] ?? $reference,
-            'status' => 'successful',
-            'description' => $desc,
-            'metadata' => $paystackData,
+            'reference' => $paystack['reference'],
+            'status' => 'pending',
+            'description' => $description,
+            'metadata' => array_merge($meta, $paystack, ['method' => 'card']),
         ]);
 
         AdminNotification::create([
             'title' => 'Paystack Payment Initialized',
-            'message' => "{$user->name} initiated ₦" . number_format((float) $validated['amount']) . " via Paystack ({$trx->reference}).",
+            'message' => "{$user->name} started a payment of NGN " . number_format($amount) . " ({$trx->reference}).",
             'type' => 'transaction',
             'target_tab' => 'transactions',
             'is_read' => false,
@@ -130,163 +139,288 @@ class TransactionController extends Controller
 
         return response()->json([
             'message' => 'Paystack checkout initialized',
-            'authorization_url' => $paystackData['authorization_url'],
-            'access_code' => $paystackData['access_code'],
+            'authorization_url' => $paystack['authorization_url'],
+            'access_code' => $paystack['access_code'],
             'reference' => $trx->reference,
             'transaction' => $trx,
         ], 201);
     }
 
     /**
-     * Verify a Paystack Transaction by Reference
+     * Apply a Paystack result to a pending transaction exactly once (idempotent).
+     * The paid amount and currency must match what we expected.
      */
-    public function verifyPaystack(string $reference): JsonResponse
+    protected function settleTransaction(Transaction $trx, array $paystackData): Transaction
     {
-        $secret = config('services.paystack.secret') ?: env('PAYSTACK_SECRET');
-        $baseUrl = rtrim(config('services.paystack.payment_url', 'https://api.paystack.co'), '/');
+        return DB::transaction(function () use ($trx, $paystackData) {
+            $locked = Transaction::lockForUpdate()->find($trx->id);
 
-        $trx = Transaction::where('reference', $reference)->first();
-        $paystackStatus = 'success';
-        $gatewayResponse = 'Approved';
+            if (!$locked || $locked->status !== 'pending') {
+                return $locked ?? $trx;
+            }
 
-        if ($secret) {
+            $status = $paystackData['status'] ?? null;
+
+            if ($status === 'success') {
+                $paidKobo = (int) ($paystackData['amount'] ?? 0);
+                $expectedKobo = (int) round($locked->amount * 100);
+                $currency = $paystackData['currency'] ?? $locked->currency;
+
+                if ($paidKobo !== $expectedKobo || $currency !== $locked->currency) {
+                    Log::error("Paystack amount mismatch for {$locked->reference}: paid {$paidKobo}, expected {$expectedKobo}");
+                    $locked->update(['status' => 'failed']);
+
+                    return $locked;
+                }
+
+                $locked->update(['status' => 'successful']);
+                $this->applySuccessEffects($locked);
+            } elseif (in_array($status, ['failed', 'abandoned', 'reversed'], true)) {
+                $locked->update(['status' => 'failed']);
+            }
+
+            return $locked;
+        });
+    }
+
+    protected function applySuccessEffects(Transaction $trx): void
+    {
+        $user = User::find($trx->user_id);
+        $planName = $trx->metadata['plan_name'] ?? null;
+
+        if ($user && $planName) {
+            $user->update(['role' => $planName]);
+        }
+
+        if ($user) {
+            Notification::create([
+                'user_id' => $user->id,
+                'type' => 'payment',
+                'title' => 'Payment Successful',
+                'message' => "Your payment of NGN " . number_format($trx->amount) . " ({$trx->reference}) was received.",
+                'description' => $trx->description,
+                'detail' => $trx->reference,
+                'is_read' => false,
+            ]);
+        }
+    }
+
+    public function index(Request $request): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+
+        $transactions = Transaction::where('user_id', $user->id)->latest()->get();
+
+        return response()->json([
+            'wallet_balance' => $this->walletBalance($user),
+            'currency' => 'NGN',
+            'transactions' => $transactions,
+        ]);
+    }
+
+    /**
+     * Initialize a Paystack checkout session (wallet deposit or merchant payment).
+     */
+    public function initializePaystack(Request $request): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:100|max:10000000',
+            'type' => 'nullable|in:deposit,payment',
+            'description' => 'nullable|string|max:255',
+        ]);
+
+        $type = $validated['type'] ?? 'deposit';
+        $description = $validated['description'] ?? ($type === 'deposit' ? 'Paystack Wallet Funding' : 'Paystack Merchant Payment');
+
+        return $this->startCheckout($user, (float) $validated['amount'], $type, $description, [], 'TXN_PSK_');
+    }
+
+    /**
+     * Verify a Paystack transaction (called by the app after the checkout redirect).
+     * The server asks Paystack directly; the client's word is never trusted.
+     */
+    public function verifyPaystack(Request $request, string $reference): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+
+        $trx = Transaction::where('reference', $reference)->where('user_id', $user->id)->first();
+
+        if (!$trx) {
+            return response()->json(['message' => 'Transaction not found.'], 404);
+        }
+
+        $secret = $this->paystackSecret();
+        $gatewayResponse = null;
+
+        if ($trx->status === 'pending' && $secret) {
             try {
                 $response = Http::withToken($secret)
-                    ->timeout(10)
-                    ->get("{$baseUrl}/transaction/verify/{$reference}");
+                    ->timeout(15)
+                    ->get($this->paystackBaseUrl() . '/transaction/verify/' . urlencode($reference));
 
                 if ($response->successful() && $response->json('status') === true) {
                     $data = $response->json('data', []);
-                    $paystackStatus = $data['status'] ?? 'success';
-                    $gatewayResponse = $data['gateway_response'] ?? 'Approved';
+                    $gatewayResponse = $data['gateway_response'] ?? null;
+                    $trx = $this->settleTransaction($trx, $data);
                 }
             } catch (\Throwable $e) {
                 Log::warning('Paystack verify error: ' . $e->getMessage());
             }
         }
 
-        if ($trx) {
-            $trx->update([
-                'status' => $paystackStatus === 'failed' ? 'failed' : 'successful',
-            ]);
-        }
+        $trx->refresh();
 
         return response()->json([
-            'message' => 'Paystack transaction verified',
+            'message' => 'Paystack transaction checked',
             'reference' => $reference,
-            'paystack_status' => $paystackStatus,
+            'paystack_status' => match ($trx->status) {
+                'successful' => 'success',
+                'failed' => 'failed',
+                default => 'pending',
+            },
             'gateway_response' => $gatewayResponse,
             'transaction' => $trx,
+            'user' => $user->fresh(),
         ]);
     }
 
+    /**
+     * Paystack webhook. Authenticated by the x-paystack-signature HMAC-SHA512 header.
+     */
+    public function paystackWebhook(Request $request): JsonResponse
+    {
+        $secret = $this->paystackSecret();
+        $signature = (string) $request->header('x-paystack-signature', '');
+
+        if (!$secret || !hash_equals(hash_hmac('sha512', $request->getContent(), $secret), $signature)) {
+            return response()->json(['message' => 'Invalid signature.'], 401);
+        }
+
+        $event = $request->input('event');
+        $data = (array) $request->input('data', []);
+
+        if (in_array($event, ['charge.success', 'charge.failed'], true) && !empty($data['reference'])) {
+            $trx = Transaction::where('reference', $data['reference'])->first();
+
+            if ($trx) {
+                if ($event === 'charge.failed') {
+                    $data['status'] = 'failed';
+                }
+                $this->settleTransaction($trx, $data);
+            }
+        }
+
+        return response()->json(['message' => 'ok']);
+    }
+
+    /**
+     * Fund the wallet through Paystack checkout.
+     */
     public function deposit(Request $request): JsonResponse
     {
         $user = $this->resolveUser($request);
 
         $validated = $request->validate([
-            'amount' => 'required|numeric|min:100',
-            'description' => 'nullable|string',
+            'amount' => 'required|numeric|min:100|max:10000000',
+            'description' => 'nullable|string|max:255',
         ]);
 
-        $reference = 'TXN_' . strtoupper(Str::random(10));
-        $paystackData = $this->callPaystackInitialize(
-            $user->email ?: 'user@kiloneed.com',
+        return $this->startCheckout(
+            $user,
             (float) $validated['amount'],
-            $reference,
-            ['user_id' => $user->id, 'type' => 'deposit']
+            'deposit',
+            $validated['description'] ?? 'Paystack Wallet Funding',
+            [],
+            'TXN_'
         );
-
-        $trx = Transaction::create([
-            'user_id' => $user->id,
-            'type' => 'deposit',
-            'amount' => $validated['amount'],
-            'currency' => 'NGN',
-            'reference' => $paystackData['reference'] ?? $reference,
-            'status' => 'successful',
-            'description' => $validated['description'] ?? 'Paystack Wallet Funding',
-            'metadata' => $paystackData,
-        ]);
-
-        return response()->json([
-            'message' => 'Wallet funded successfully via Paystack',
-            'authorization_url' => $paystackData['authorization_url'],
-            'access_code' => $paystackData['access_code'],
-            'transaction' => $trx,
-        ], 201);
     }
 
+    /**
+     * Request a withdrawal. Funds are reserved immediately; the payout stays
+     * "pending" until an administrator processes it from the Revenue & Ledger tab.
+     */
     public function withdraw(Request $request): JsonResponse
     {
         $user = $this->resolveUser($request);
 
         $validated = $request->validate([
-            'amount' => 'required|numeric|min:100',
-            'description' => 'nullable|string',
+            'amount' => 'required|numeric|min:100|max:10000000',
+            'description' => 'nullable|string|max:255',
         ]);
 
-        $trx = Transaction::create([
-            'user_id' => $user->id,
-            'type' => 'withdrawal',
-            'amount' => $validated['amount'],
-            'currency' => 'NGN',
-            'reference' => 'TXN_WDR_' . strtoupper(Str::random(8)),
-            'status' => 'successful',
-            'description' => $validated['description'] ?? 'Bank Account Withdrawal',
+        $amount = (float) $validated['amount'];
+
+        $result = DB::transaction(function () use ($user, $amount, $validated) {
+            if ($amount > $this->walletBalance($user)) {
+                return null;
+            }
+
+            return Transaction::create([
+                'user_id' => $user->id,
+                'type' => 'withdrawal',
+                'amount' => $amount,
+                'currency' => 'NGN',
+                'reference' => 'TXN_WDR_' . strtoupper(Str::random(10)),
+                'status' => 'pending',
+                'description' => $validated['description'] ?? 'Bank Account Withdrawal',
+            ]);
+        });
+
+        if (!$result) {
+            return response()->json(['message' => 'Insufficient wallet balance.'], 422);
+        }
+
+        AdminNotification::create([
+            'title' => 'Withdrawal Requested',
+            'message' => "{$user->name} requested a withdrawal of NGN " . number_format($amount) . " ({$result->reference}).",
+            'type' => 'transaction',
+            'target_tab' => 'transactions',
+            'is_read' => false,
         ]);
 
         return response()->json([
-            'message' => 'Withdrawal processed successfully',
-            'transaction' => $trx,
+            'message' => 'Withdrawal request submitted and awaiting processing',
+            'transaction' => $result,
         ], 201);
     }
 
+    /**
+     * Subscribe to a plan. Paid plans are only activated after Paystack confirms payment.
+     */
     public function subscribe(Request $request): JsonResponse
     {
         $user = $this->resolveUser($request);
 
         $validated = $request->validate([
-            'plan_id' => 'required|string',
-            'plan_name' => 'required|string',
-            'amount' => 'required|numeric|min:0',
-            'billing_cycle' => 'nullable|string',
+            'plan_id' => 'required|string|in:' . implode(',', array_keys(self::PLANS)),
+            'billing_cycle' => 'nullable|string|in:monthly,annual',
         ]);
 
-        $user->update([
-            'role' => $validated['plan_name'],
-            'kyc_status' => 'verified',
-        ]);
+        $plan = self::PLANS[$validated['plan_id']];
+        $cycle = $validated['billing_cycle'] ?? 'monthly';
+        $amount = (float) $plan[$cycle];
 
-        $trx = null;
-        $paystackData = null;
+        if ($amount <= 0) {
+            $user->update(['role' => $plan['name']]);
 
-        if ($validated['amount'] > 0) {
-            $reference = 'TXN_SUB_' . strtoupper(Str::random(8));
-            $paystackData = $this->callPaystackInitialize(
-                $user->email ?: 'user@kiloneed.com',
-                (float) $validated['amount'],
-                $reference,
-                ['user_id' => $user->id, 'plan_name' => $validated['plan_name']]
-            );
-
-            $trx = Transaction::create([
-                'user_id' => $user->id,
-                'type' => 'payment',
-                'amount' => $validated['amount'],
-                'currency' => 'NGN',
-                'reference' => $paystackData['reference'] ?? $reference,
-                'status' => 'successful',
-                'description' => "{$validated['plan_name']} (" . ($validated['billing_cycle'] ?? 'Monthly') . " Plan)",
-                'metadata' => $paystackData,
+            return response()->json([
+                'message' => "Switched to {$plan['name']}",
+                'authorization_url' => null,
+                'access_code' => null,
+                'user' => $user->fresh(),
+                'transaction' => null,
             ]);
         }
 
-        return response()->json([
-            'message' => "Subscribed to {$validated['plan_name']} successfully",
-            'authorization_url' => $paystackData['authorization_url'] ?? null,
-            'access_code' => $paystackData['access_code'] ?? null,
-            'user' => $user->fresh(),
-            'transaction' => $trx,
-        ]);
+        return $this->startCheckout(
+            $user,
+            $amount,
+            'payment',
+            "{$plan['name']} (" . ucfirst($cycle) . ' Plan)',
+            ['plan_id' => $validated['plan_id'], 'plan_name' => $plan['name'], 'billing_cycle' => $cycle],
+            'TXN_SUB_'
+        );
     }
 }

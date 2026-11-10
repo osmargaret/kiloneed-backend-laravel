@@ -66,6 +66,7 @@ class User extends Authenticatable
             'active_needs_count' => 'integer',
             'completed_deals_count' => 'integer',
             'settings' => 'array',
+            'is_admin' => 'boolean',
         ];
     }
 

@@ -66,7 +66,6 @@ class ProductController extends Controller
             'category' => 'nullable|string',
             'subcategory' => 'nullable|string',
             'image' => 'nullable|string',
-            'featured' => 'nullable|boolean',
             'condition' => 'nullable|string',
             'availability' => 'nullable|string',
             'listing_type' => 'nullable|string',
@@ -84,7 +83,7 @@ class ProductController extends Controller
             'category' => $validated['category'] ?? 'Electronics',
             'subcategory' => $validated['subcategory'] ?? 'General',
             'image' => $validated['image'] ?? 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?w=500&h=500&fit=crop',
-            'featured' => $validated['featured'] ?? false,
+            'featured' => false,
             'condition' => $validated['condition'] ?? 'Brand New',
             'availability' => $validated['availability'] ?? 'Available',
             'listing_type' => $validated['listing_type'] ?? 'For Sale',
@@ -110,7 +109,9 @@ class ProductController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        $user = $this->resolveUser($request);
         $product = Product::findOrFail($id);
+        abort_if($product->user_id !== $user->id, 403, 'You can only edit your own listings.');
         $product->update($request->only([
             'title',
             'price',
@@ -120,7 +121,6 @@ class ProductController extends Controller
             'category',
             'subcategory',
             'image',
-            'featured',
             'condition',
             'availability',
             'listing_type',
@@ -134,9 +134,11 @@ class ProductController extends Controller
         ]);
     }
 
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, int $id): JsonResponse
     {
+        $user = $this->resolveUser($request);
         $product = Product::findOrFail($id);
+        abort_if($product->user_id !== $user->id, 403, 'You can only remove your own listings.');
         $product->delete();
 
         return response()->json([

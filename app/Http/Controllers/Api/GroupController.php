@@ -12,7 +12,7 @@ class GroupController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $user = $this->resolveUser($request);
+        $user = $this->optionalUser($request);
 
         $groups = Group::withCount('members')->latest()->get();
 

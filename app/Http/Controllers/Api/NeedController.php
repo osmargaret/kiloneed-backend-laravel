@@ -33,7 +33,7 @@ class NeedController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $currentUser = $this->resolveUser($request);
+        $currentUser = $this->optionalUser($request);
         $userLat = $request->query('lat', $currentUser?->latitude ?? 6.5966);
         $userLon = $request->query('lon', $currentUser?->longitude ?? 3.3421);
         $maxRadiusKm = (float) $request->query('radius_km', 50); // Default 50km geofence filter

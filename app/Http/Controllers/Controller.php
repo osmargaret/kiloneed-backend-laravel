@@ -8,14 +8,28 @@ use Illuminate\Http\Request;
 abstract class Controller
 {
     /**
-     * Resolve authenticated Sanctum user or fallback to default seeded user for frictionless UX
+     * Resolve the authenticated Sanctum user. Aborts with 401 when the request
+     * carries no valid bearer token (no more silent fallback to a default user).
      */
     protected function resolveUser(Request $request): User
     {
-        return $request->user('sanctum')
-            ?? $request->user()
-            ?? User::where('email', 'user@kiloneed.com')->first()
-            ?? User::first()
-            ?? User::factory()->create();
+        $user = $request->user('sanctum');
+
+        if (!$user instanceof User) {
+            abort(response()->json(['message' => 'Unauthenticated.'], 401));
+        }
+
+        return $user;
+    }
+
+    /**
+     * Resolve the authenticated user if a valid token was sent, otherwise null.
+     * Used by public endpoints that personalise their response for signed-in users.
+     */
+    protected function optionalUser(Request $request): ?User
+    {
+        $user = $request->user('sanctum');
+
+        return $user instanceof User ? $user : null;
     }
 }
