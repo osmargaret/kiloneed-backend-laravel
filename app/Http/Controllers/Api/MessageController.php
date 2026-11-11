@@ -140,9 +140,9 @@ class MessageController extends Controller
                 'time' => 'Just now',
                 'media_url' => $msg->media_url,
                 'media_type' => $msg->media_type,
-            ]))->toOthers();
+            ]));
         } catch (\Throwable $e) {
-            // Broadcasting silent fallback
+            \Illuminate\Support\Facades\Log::error('Broadcasting failed: ' . $e->getMessage());
         }
 
         $msg->isMine = true;
