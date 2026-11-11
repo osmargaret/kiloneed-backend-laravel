@@ -23,12 +23,14 @@ class MediaUploadController extends Controller
         $mimeType = $file->getMimeType();
         $sizeBytes = $file->getSize();
 
-        // Determine type: image, video, document
+        // Determine type: image, video, audio, document
         $type = 'document';
         if (str_starts_with($mimeType, 'image/')) {
             $type = 'image';
         } elseif (str_starts_with($mimeType, 'video/')) {
             $type = 'video';
+        } elseif (str_starts_with($mimeType, 'audio/')) {
+            $type = 'audio';
         }
 
         // Format readable size

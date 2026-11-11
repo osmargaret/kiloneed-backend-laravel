@@ -102,15 +102,35 @@ class MessageController extends Controller
         }
 
         $validated = $request->validate([
-            'text' => 'required|string',
+            'text' => 'nullable|string',
             'media_url' => 'nullable|string',
             'media_type' => 'nullable|string',
         ]);
 
+        if (empty($validated['text']) && empty($validated['media_url'])) {
+            return response()->json(['message' => 'Message text or media is required'], 422);
+        }
+
+        $msgText = $validated['text'] ?? '';
+        if (trim($msgText) === '') {
+            $mediaType = $validated['media_type'] ?? '';
+            if ($mediaType === 'audio' || str_contains($validated['media_url'] ?? '', '.webm') || str_contains($validated['media_url'] ?? '', '.mp3')) {
+                $msgText = '🎤 Voice note';
+            } elseif ($mediaType === 'video' || str_contains($validated['media_url'] ?? '', '.mp4')) {
+                $msgText = '🎥 Video';
+            } elseif ($mediaType === 'image') {
+                $msgText = '📷 Photo';
+            } elseif ($mediaType === 'location') {
+                $msgText = '📍 Shared location';
+            } else {
+                $msgText = '📎 Attachment';
+            }
+        }
+
         $msg = Message::create([
             'conversation_id' => $conversation->id,
             'sender_id' => $user->id,
-            'text' => $validated['text'],
+            'text' => $msgText,
             'media_url' => $validated['media_url'] ?? null,
             'media_type' => $validated['media_type'] ?? null,
         ]);
@@ -121,7 +141,7 @@ class MessageController extends Controller
                 'user_id' => $otherUser->id,
                 'type' => 'message',
                 'title' => "New message from {$user->name}",
-                'description' => mb_substr($validated['text'], 0, 70),
+                'description' => mb_substr($msgText, 0, 70),
                 'from_user_id' => $user->id,
             ]);
         }
