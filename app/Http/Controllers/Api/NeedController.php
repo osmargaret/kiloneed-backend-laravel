@@ -50,8 +50,8 @@ class NeedController extends Controller
         $query = Need::with(['user', 'media', 'comments', 'chats'])
             ->where('status', 'active');
 
-        // Exclude expired needs if not explicitly requested
-        if (!$request->boolean('include_expired')) {
+        // Only exclude expired needs if explicitly requested with exclude_expired=true
+        if ($request->boolean('exclude_expired')) {
             $query->where('expires_at', '>', Carbon::now());
         }
 
@@ -156,7 +156,7 @@ class NeedController extends Controller
             'media.*.alt' => 'nullable|string',
         ]);
 
-        $hours = $validated['expires_in_hours'] ?? $request->input('expiresInHours') ?? 24;
+        $hours = $validated['expires_in_hours'] ?? $request->input('expiresInHours') ?? 720; // Default: 30 days
         $expiresAt = Carbon::now()->addHours((int) $hours);
 
         $categories = $validated['categories'] ?? [$user->industry ?: 'General'];
