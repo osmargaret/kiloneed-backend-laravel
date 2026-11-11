@@ -27,3 +27,4 @@ return new class extends Migration
         DB::statement('ALTER TABLE users ALTER COLUMN avatar TYPE VARCHAR(255);');
     }
 };
+

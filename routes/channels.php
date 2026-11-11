@@ -20,3 +20,4 @@ Broadcast::channel('need.{needId}', function ($user, $needId) {
 Broadcast::channel('group.{groupId}', function ($user, $groupId) {
     return true;
 });
+

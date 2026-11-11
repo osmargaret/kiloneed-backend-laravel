@@ -127,6 +127,24 @@ class MessageController extends Controller
         }
 
         $msg->load('sender');
+
+        try {
+            broadcast(new \App\Events\MessageSent([
+                'id' => (string) $msg->id,
+                'conversation_id' => (int) $conversation->id,
+                'receiver_id' => $otherUser ? (int) $otherUser->id : null,
+                'sender' => $user->name,
+                'sender_id' => $user->id,
+                'sender_avatar' => $user->avatar,
+                'text' => $msg->text,
+                'time' => 'Just now',
+                'media_url' => $msg->media_url,
+                'media_type' => $msg->media_type,
+            ]))->toOthers();
+        } catch (\Throwable $e) {
+            // Broadcasting silent fallback
+        }
+
         $msg->isMine = true;
 
         return response()->json([

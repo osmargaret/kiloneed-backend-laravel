@@ -62,6 +62,19 @@ class NeedChatController extends Controller
         }
 
         $chat->load(['senderUser', 'recipientUser']);
+
+        try {
+            broadcast(new \App\Events\MessageSent([
+                'id' => (string) $chat->id,
+                'need_id' => (int) $need->id,
+                'receiver_id' => $recipientId ? (int) $recipientId : null,
+                'sender' => $user->name,
+                'sender_id' => $user->id,
+                'text' => $chat->text,
+                'time' => 'Just now',
+            ]))->toOthers();
+        } catch (\Throwable $e) {}
+
         $chat->isMine = true;
 
         return response()->json([

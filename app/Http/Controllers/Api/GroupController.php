@@ -14,11 +14,33 @@ class GroupController extends Controller
     {
         $user = $this->optionalUser($request);
 
-        $groups = Group::withCount('members')->latest()->get();
+        $groups = Group::with(['owner', 'members.user'])->withCount('members')->latest()->get();
 
         $processed = $groups->map(function ($g) use ($user) {
             $g->isMember = $user ? GroupMember::where('group_id', $g->id)->where('user_id', $user->id)->exists() : false;
             $g->isAdmin = $user ? ($g->owner_id === $user->id || GroupMember::where('group_id', $g->id)->where('user_id', $user->id)->where('role', 'admin')->exists()) : false;
+
+            $members = $g->members->map(function ($m) {
+                return [
+                    'id' => $m->user_id,
+                    'name' => $m->user ? $m->user->name : 'Member',
+                    'avatar' => $m->user && $m->user->avatar ? $m->user->avatar : strtoupper(substr($m->user ? $m->user->name : 'MB', 0, 2)),
+                    'role' => $m->role,
+                    'joinedAt' => $m->created_at ? $m->created_at->diffForHumans() : 'Recently',
+                ];
+            });
+
+            if ($g->owner && !$members->contains('id', $g->owner_id)) {
+                $members->prepend([
+                    'id' => $g->owner_id,
+                    'name' => $g->owner->name,
+                    'avatar' => $g->owner->avatar ?: strtoupper(substr($g->owner->name, 0, 2)),
+                    'role' => 'admin',
+                    'joinedAt' => $g->created_at ? $g->created_at->diffForHumans() : 'Owner',
+                ]);
+            }
+
+            $g->real_members = $members;
             return $g;
         });
 
@@ -29,9 +51,21 @@ class GroupController extends Controller
     {
         $user = $this->resolveUser($request);
 
-        $groups = $user->groups()->withCount('members')->get();
+        $joinedGroupIds = GroupMember::where('user_id', $user->id)->pluck('group_id');
+        $groups = Group::whereIn('id', $joinedGroupIds)
+            ->orWhere('owner_id', $user->id)
+            ->with(['owner', 'members.user'])
+            ->withCount('members')
+            ->latest()
+            ->get();
 
-        return response()->json($groups);
+        $processed = $groups->map(function ($g) use ($user) {
+            $g->isMember = true;
+            $g->isAdmin = $g->owner_id === $user->id || GroupMember::where('group_id', $g->id)->where('user_id', $user->id)->where('role', 'admin')->exists();
+            return $g;
+        });
+
+        return response()->json($processed);
     }
 
     public function store(Request $request): JsonResponse

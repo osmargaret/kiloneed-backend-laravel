@@ -42,3 +42,4 @@ class MessageSent implements ShouldBroadcastNow
         return 'message.sent';
     }
 }
+

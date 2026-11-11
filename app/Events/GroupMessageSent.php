@@ -33,3 +33,4 @@ class GroupMessageSent implements ShouldBroadcastNow
         return 'group.message';
     }
 }
+
