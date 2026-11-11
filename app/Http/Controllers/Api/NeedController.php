@@ -43,7 +43,7 @@ class NeedController extends Controller
         $country = $request->query('country');
         $state = $request->query('state');
         $city = $request->query('city');
-        $sort = $request->query('sort', 'oldest'); // 'oldest', 'newest', 'distance'
+        $sort = $request->query('sort', 'newest'); // 'newest', 'oldest', 'distance'
         $page = (int) $request->query('page', 1);
         $pageSize = (int) $request->query('page_size', 10);
 
@@ -110,14 +110,14 @@ class NeedController extends Controller
         // Radius filtering removed per user specification: now using Country, State, City (CSC)
         // distanceKm is preserved on each need for information only
 
-        // Sorting
-        if ($sort === 'newest') {
-            $processed = $processed->sortByDesc('created_at')->values();
+        // Sorting: default is newest to oldest ("newest up")
+        if ($sort === 'oldest') {
+            $processed = $processed->sortBy('created_at')->values();
         } elseif ($sort === 'distance') {
             $processed = $processed->sortBy('distanceKm')->values();
         } else {
-            // Default: oldest to newest
-            $processed = $processed->sortBy('created_at')->values();
+            // Default: newest to oldest
+            $processed = $processed->sortByDesc('created_at')->values();
         }
 
         $totalCount = $processed->count();
