@@ -24,16 +24,26 @@ class MessageController extends Controller
             $otherUser = $c->users->firstWhere('id', '!=', $user->id);
             $lastMessage = $c->messages->first();
 
+            $hasUnread = false;
+            if ($lastMessage && $lastMessage->sender_id !== $user->id) {
+                $hasUnread = Notification::where('user_id', $user->id)
+                    ->where('from_user_id', $lastMessage->sender_id)
+                    ->where('type', 'message')
+                    ->where('is_read', false)
+                    ->exists();
+            }
+
             return [
                 'id' => $c->id,
                 'title' => $c->title ?: ($otherUser ? $otherUser->name : 'Conversation'),
                 'avatar' => $otherUser?->avatar,
                 'otherUser' => $otherUser,
                 'lastMessage' => $lastMessage ? $lastMessage->text : null,
-                'lastMessageTime' => $lastMessage ? $lastMessage->time : null,
-                'unread' => false,
+                'lastMessageTime' => $lastMessage && $lastMessage->created_at ? $lastMessage->created_at->diffForHumans() : null,
+                'lastMessageAt' => $lastMessage && $lastMessage->created_at ? $lastMessage->created_at->timestamp : ($c->updated_at ? $c->updated_at->timestamp : 0),
+                'unread' => $hasUnread,
             ];
-        });
+        })->sortByDesc('lastMessageAt')->values();
 
         return response()->json($formatted);
     }
@@ -49,6 +59,15 @@ class MessageController extends Controller
         }
 
         $otherUser = $conversation->users->firstWhere('id', '!=', $user->id);
+
+        // Automatically mark unread message notifications from this user as read
+        if ($otherUser) {
+            Notification::where('user_id', $user->id)
+                ->where('from_user_id', $otherUser->id)
+                ->where('type', 'message')
+                ->where('is_read', false)
+                ->update(['is_read' => true, 'read_at' => now()]);
+        }
 
         $messages = $conversation->messages()->oldest()->get()->map(function ($m) use ($user) {
             $m->isMine = ($m->sender_id === $user->id);
