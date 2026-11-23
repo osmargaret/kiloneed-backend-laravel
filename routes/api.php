@@ -97,6 +97,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/groups/{id}', [GroupController::class, 'destroy']);
     Route::post('/groups/{id}/join', [GroupController::class, 'join']);
     Route::post('/groups/{id}/leave', [GroupController::class, 'leave']);
+    Route::get('/groups/{id}/posts', [GroupController::class, 'posts']);
+    Route::post('/groups/{id}/posts', [GroupController::class, 'createPost']);
+    Route::post('/groups/{id}/members/{memberId}/role', [GroupController::class, 'updateMemberRole']);
 
     // Messaging
     Route::get('/conversations', [MessageController::class, 'conversations']);

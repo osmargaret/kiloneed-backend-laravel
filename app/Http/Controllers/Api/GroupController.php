@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Events\GroupMessageSent;
 use App\Models\Group;
 use App\Models\GroupMember;
+use App\Models\GroupPost;
+use App\Models\Notification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -129,11 +132,188 @@ class GroupController extends Controller
             'group_id' => $group->id,
             'user_id' => $user->id,
         ], [
-            'role' => 'member',
+            'role' => $group->owner_id === $user->id ? 'admin' : 'member',
         ]);
+
+        // Notify group creator when a new member joins
+        if ($group->owner_id && $group->owner_id !== $user->id) {
+            Notification::create([
+                'user_id' => $group->owner_id,
+                'type' => 'group_accepted',
+                'title' => "{$user->name} joined {$group->name}",
+                'description' => "{$user->name} is now a member of your trade group.",
+                'from_user_id' => $user->id,
+            ]);
+        }
+
+        try {
+            broadcast(new GroupMessageSent($group->id, [
+                'event' => 'member_joined',
+                'group_id' => $group->id,
+                'member' => [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'avatar' => $user->avatar ?: strtoupper(substr($user->name, 0, 2)),
+                    'role' => $member->role,
+                    'joinedAt' => 'Just now',
+                ],
+            ]));
+        } catch (\Throwable $e) {
+            // ignore broadcast error
+        }
 
         return response()->json([
             'message' => 'Joined group successfully',
+            'member' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'avatar' => $user->avatar ?: strtoupper(substr($user->name, 0, 2)),
+                'role' => $member->role,
+                'joinedAt' => 'Just now',
+            ],
+        ]);
+    }
+
+    public function posts(int $id): JsonResponse
+    {
+        $group = Group::findOrFail($id);
+        $posts = GroupPost::with('user')
+            ->where('group_id', $group->id)
+            ->latest()
+            ->get()
+            ->map(function ($p) use ($group) {
+                $memberRole = 'member';
+                if ($p->user_id === $group->owner_id) {
+                    $memberRole = 'admin';
+                } else {
+                    $gm = GroupMember::where('group_id', $group->id)->where('user_id', $p->user_id)->first();
+                    if ($gm) $memberRole = $gm->role;
+                }
+                return [
+                    'id' => $p->id,
+                    'group_id' => $p->group_id,
+                    'user_id' => $p->user_id,
+                    'author' => $p->user ? $p->user->name : 'Member',
+                    'avatar' => $p->user && $p->user->avatar ? $p->user->avatar : strtoupper(substr($p->user ? $p->user->name : 'MB', 0, 2)),
+                    'role' => $memberRole,
+                    'text' => $p->text,
+                    'media_url' => $p->media_url,
+                    'likes' => $p->likes_count,
+                    'comments' => [],
+                    'time' => $p->created_at ? $p->created_at->diffForHumans() : 'Just now',
+                ];
+            });
+
+        return response()->json($posts);
+    }
+
+    public function createPost(Request $request, int $id): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $group = Group::findOrFail($id);
+
+        $isMember = $group->owner_id === $user->id || GroupMember::where('group_id', $group->id)->where('user_id', $user->id)->exists();
+        if (!$isMember) {
+            return response()->json(['message' => 'You must join this group before participating.'], 403);
+        }
+
+        $validated = $request->validate([
+            'text' => 'required|string',
+            'media_url' => 'nullable|string',
+        ]);
+
+        $post = GroupPost::create([
+            'group_id' => $group->id,
+            'user_id' => $user->id,
+            'text' => $validated['text'],
+            'media_url' => $validated['media_url'] ?? null,
+        ]);
+
+        $memberRole = 'member';
+        if ($user->id === $group->owner_id) {
+            $memberRole = 'admin';
+        } else {
+            $gm = GroupMember::where('group_id', $group->id)->where('user_id', $user->id)->first();
+            if ($gm) $memberRole = $gm->role;
+        }
+
+        $payload = [
+            'id' => $post->id,
+            'group_id' => $group->id,
+            'user_id' => $user->id,
+            'author' => $user->name,
+            'avatar' => $user->avatar ?: strtoupper(substr($user->name, 0, 2)),
+            'role' => $memberRole,
+            'text' => $post->text,
+            'media_url' => $post->media_url,
+            'likes' => 0,
+            'comments' => [],
+            'time' => 'Just now',
+        ];
+
+        try {
+            broadcast(new GroupMessageSent($group->id, [
+                'event' => 'post_created',
+                'post' => $payload,
+            ]));
+        } catch (\Throwable $e) {
+            // ignore broadcast error
+        }
+
+        return response()->json([
+            'message' => 'Posted to group successfully',
+            'post' => $payload,
+        ], 201);
+    }
+
+    public function updateMemberRole(Request $request, int $id, int $memberId): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $group = Group::findOrFail($id);
+
+        $isAdmin = $group->owner_id === $user->id || GroupMember::where('group_id', $group->id)
+            ->where('user_id', $user->id)
+            ->where('role', 'admin')
+            ->exists();
+
+        if (!$isAdmin) {
+            return response()->json(['message' => 'Only the group creator or admins can assign moderators.'], 403);
+        }
+
+        if ($memberId === (int) $group->owner_id) {
+            return response()->json(['message' => 'Cannot change the role of the group creator.'], 422);
+        }
+
+        $validated = $request->validate([
+            'role' => 'required|string|in:moderator,member,admin',
+        ]);
+
+        $member = GroupMember::where('group_id', $group->id)
+            ->where('user_id', $memberId)
+            ->firstOrFail();
+
+        $member->update(['role' => $validated['role']]);
+
+        Notification::create([
+            'user_id' => $memberId,
+            'type' => 'group_role_change',
+            'title' => "Role updated in {$group->name}",
+            'description' => "You have been made a {$validated['role']} in {$group->name} by {$user->name}.",
+            'from_user_id' => $user->id,
+        ]);
+
+        try {
+            broadcast(new GroupMessageSent($group->id, [
+                'event' => 'role_updated',
+                'member_id' => $memberId,
+                'role' => $validated['role'],
+            ]));
+        } catch (\Throwable $e) {
+            // ignore broadcast error
+        }
+
+        return response()->json([
+            'message' => "Member role updated to {$validated['role']}",
             'member' => $member,
         ]);
     }

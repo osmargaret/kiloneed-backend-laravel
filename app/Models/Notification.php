@@ -36,6 +36,28 @@ class Notification extends Model
         'read',
     ];
 
+    protected static function booted(): void
+    {
+        static::created(function (Notification $notification) {
+            try {
+                $notification->loadMissing('fromUser');
+                broadcast(new \App\Events\NotificationCreated([
+                    'id' => (string) $notification->id,
+                    'user_id' => (int) $notification->user_id,
+                    'type' => $notification->type,
+                    'title' => $notification->title,
+                    'description' => $notification->description ?: ($notification->message ?? ''),
+                    'detail' => $notification->detail ?: ($notification->message ?? $notification->description ?? ''),
+                    'from' => $notification->from,
+                    'time' => 'Just now',
+                    'read' => false,
+                ]));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Notification broadcast failed: ' . $e->getMessage());
+            }
+        });
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
