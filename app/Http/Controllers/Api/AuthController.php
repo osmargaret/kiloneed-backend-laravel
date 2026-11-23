@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
 use App\Models\AdminOtp;
+use App\Models\Notification;
 use App\Models\ProfileChangeRequest;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -64,11 +65,154 @@ class AuthController extends Controller
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
+        $otp = $this->issueAndSendVerificationOtp($user);
+
         return response()->json([
-            'message' => 'Registration successful',
+            'message' => "Account created! A 6-digit verification code has been sent to {$email}.",
             'user' => $user,
             'token' => $token,
+            'requires_verification' => true,
+            'otp_preview' => $otp,
         ], 201);
+    }
+
+    protected function issueAndSendVerificationOtp(User $user): string
+    {
+        $email = strtolower(trim($user->email));
+        $otp = (string) random_int(100000, 999999);
+
+        AdminOtp::where('email', $email)
+            ->where('purpose', 'email_verify')
+            ->whereNull('used_at')
+            ->update(['used_at' => Carbon::now()]);
+
+        AdminOtp::create([
+            'email' => $email,
+            'otp' => $otp,
+            'purpose' => 'email_verify',
+            'expires_at' => Carbon::now()->addMinutes(15),
+        ]);
+        Cache::forget("kiloneed_verify_attempts_{$email}");
+
+        try {
+            Mail::raw(
+                "Hello {$user->name},\n\n" .
+                "Your Kiloneed email verification code is: {$otp}\n\n" .
+                "Enter this 6-digit code in the app to verify your email address. This code expires in 15 minutes.\n\n" .
+                "Thank you,\nThe Kiloneed Team",
+                function ($message) use ($email) {
+                    $message->to($email)->subject('Verify Your Kiloneed Email Address');
+                }
+            );
+        } catch (\Throwable $e) {
+            Log::error('Email verification OTP send failed: ' . $e->getMessage());
+        }
+
+        return $otp;
+    }
+
+    public function verifyEmail(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => 'required|email',
+            'otp' => 'required|string|min:4|max:8',
+        ]);
+
+        $email = strtolower(trim($validated['email']));
+        $user = User::whereRaw('lower(email) = ?', [$email])->first();
+        if (!$user) {
+            return response()->json(['message' => 'Account not found.'], 404);
+        }
+
+        $record = AdminOtp::where('email', $email)
+            ->where('purpose', 'email_verify')
+            ->whereNull('used_at')
+            ->where('expires_at', '>', Carbon::now())
+            ->latest('id')
+            ->first();
+
+        if (!$record) {
+            return response()->json(['message' => 'Invalid or expired verification code. Please request a new one.'], 422);
+        }
+
+        $attemptsKey = "kiloneed_verify_attempts_{$email}";
+        $attempts = (int) Cache::get($attemptsKey, 0);
+        if (!hash_equals((string) $record->otp, trim((string) $validated['otp']))) {
+            $attempts++;
+            Cache::put($attemptsKey, $attempts, now()->addMinutes(15));
+            if ($attempts >= 5) {
+                $record->update(['used_at' => Carbon::now()]);
+                return response()->json(['message' => 'Too many incorrect attempts. Please request a new code.'], 422);
+            }
+            return response()->json(['message' => 'Incorrect verification code.'], 422);
+        }
+
+        $record->update(['used_at' => Carbon::now()]);
+        Cache::forget($attemptsKey);
+
+        if (!$user->email_verified_at) {
+            $user->forceFill(['email_verified_at' => Carbon::now()])->save();
+
+            // Send Welcome Email
+            try {
+                Mail::raw(
+                    "Welcome to Kiloneed, {$user->name}!\n\n" .
+                    "Welcome to Kiloneed — where every need meets its solution right around you.\n\n" .
+                    "Here is what you can do right away:\n" .
+                    "• Post a Need: Broadcast what you are looking for and get real-time responses from nearby merchants.\n" .
+                    "• Explore the Marketplace: Discover verified sellers, deals, and featured items around you.\n" .
+                    "• Join Trade Groups: Collaborate with businesses and buyers in your industry.\n" .
+                    "• Real-Time Chat: Message buyers and sellers directly with instant notifications.\n\n" .
+                    "We are thrilled to have you on board!\n\n" .
+                    "Best regards,\nThe Kiloneed Team",
+                    function ($message) use ($email) {
+                        $message->to($email)->subject('Welcome to Kiloneed — Every Need, Every Solution!');
+                    }
+                );
+            } catch (\Throwable $e) {
+                Log::error('Welcome email send failed: ' . $e->getMessage());
+            }
+
+            // Create welcome in-app notification
+            try {
+                Notification::create([
+                    'user_id' => $user->id,
+                    'type' => 'system',
+                    'title' => "Welcome to Kiloneed, {$user->name}!",
+                    'description' => 'Your email is verified. Welcome to Kiloneed — where every need meets its solution right around you.',
+                ]);
+            } catch (\Throwable $e) {
+                // ignore
+            }
+        }
+
+        return response()->json([
+            'message' => 'Email verified successfully! Welcome to Kiloneed.',
+            'verified' => true,
+            'user' => $user->fresh(),
+        ]);
+    }
+
+    public function resendVerification(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['email' => 'required|email']);
+        $email = strtolower(trim($validated['email']));
+
+        $user = User::whereRaw('lower(email) = ?', [$email])->first();
+        if (!$user) {
+            return response()->json(['message' => 'Account not found.'], 404);
+        }
+
+        if ($user->email_verified_at) {
+            return response()->json(['message' => 'Email is already verified.', 'verified' => true]);
+        }
+
+        $otp = $this->issueAndSendVerificationOtp($user);
+
+        return response()->json([
+            'message' => "A new 6-digit verification code has been sent to {$email}.",
+            'otp_preview' => $otp,
+        ]);
     }
 
     public function login(Request $request): JsonResponse
