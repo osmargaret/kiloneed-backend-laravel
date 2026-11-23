@@ -74,6 +74,7 @@ class ProductController extends Controller
             'availability' => 'nullable|string',
             'listing_type' => 'nullable|string',
             'negotiable' => 'nullable|boolean',
+            'featured' => 'nullable|boolean',
         ]);
 
         $product = Product::create([
@@ -88,7 +89,7 @@ class ProductController extends Controller
             'category' => $validated['category'] ?? 'Electronics',
             'subcategory' => $validated['subcategory'] ?? 'General',
             'image' => $validated['image'] ?? 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?w=500&h=500&fit=crop',
-            'featured' => false,
+            'featured' => $validated['featured'] ?? false,
             'condition' => $validated['condition'] ?? 'Brand New',
             'availability' => $validated['availability'] ?? 'Available',
             'listing_type' => $validated['listing_type'] ?? 'For Sale',
